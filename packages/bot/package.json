@@ -1,0 +1,30 @@
+{
+  "name": "@kruto52/bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@grammyjs/conversations": "^1.2.0",
+    "@grammyjs/runner": "^2.0.3",
+    "@kruto52/shared": "*",
+    "grammy": "^1.30.0",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "pngjs": "^7.0.0",
+    "undici": "^6.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@types/pngjs": "^6.0.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

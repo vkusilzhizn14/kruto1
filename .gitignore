@@ -1,0 +1,25 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# C build artifacts
+*.o
+*.a
+*.so
+*.dylib
+packages/worker/build/
+packages/worker/seed_worker
+packages/worker/seed_precompute
+
+# Docker
+.docker/
+
+# IDE
+.vscode/
+.idea/
+*.swp

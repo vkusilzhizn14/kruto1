@@ -1,0 +1,51 @@
+version: "3.9"
+
+# Local + RU-server deployment.
+#
+# Single-host setup that keeps everything close to disk + CPU. The bot talks
+# to Postgres over the docker network and to the C worker via local spawn
+# (worker binaries are baked into the bot image).
+#
+# To deploy to your RU server:
+#   1. Copy this repo to the server
+#   2. Create .env from .env.example
+#   3. docker compose pull && docker compose up -d --build
+#
+# Long-polling means no public IP / port-forwarding is required — only
+# outbound 443 to Telegram + crypt.bot.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kruto52
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kruto52_dev}
+      POSTGRES_DB: kruto52
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kruto52"]
+      interval: 5s
+      retries: 10
+
+  bot:
+    build:
+      context: .
+      dockerfile: packages/bot/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://kruto52:${POSTGRES_PASSWORD:-kruto52_dev}@postgres:5432/kruto52
+      WORKER_BINARY: /usr/local/bin/seed_worker
+      PRECOMPUTE_BINARY: /usr/local/bin/seed_precompute
+      MIGRATIONS_DIR: /app/db/migrations
+    # Long-polling: no inbound ports needed. For CryptoBot webhooks you'll
+    # need to expose a port and front it with a reverse proxy.
+
+volumes:
+  pgdata:
