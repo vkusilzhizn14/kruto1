@@ -53,6 +53,15 @@ export interface SearchOutcome {
   seedsTested: number;
 }
 
+export interface LiveSearchCallbacks {
+  /** Called when the request enters the semaphore queue. 1-based. */
+  onQueued?: (position: number) => void;
+  /** Called every time the user's queue position improves (0 = next). */
+  onPositionChanged?: (position: number) => void;
+  /** Called once the slot is acquired and the worker is about to spawn. */
+  onSearchStarted?: () => void;
+}
+
 export interface SearchInput {
   userId: number;
   mc: McVersion;
@@ -63,8 +72,15 @@ export interface SearchInput {
   excludeSeeds?: ReadonlyArray<bigint>;
   timeoutMs?: number;
   callbacks?: WorkerCallbacks;
+  liveCallbacks?: LiveSearchCallbacks;
   /** When false, never run a live worker (free-tier caps). */
   allowLiveSearch?: boolean;
+  /**
+   * When set, aborting the signal cancels the live search: if still
+   * queued, removes the waiter; if already running, sends SIGTERM to
+   * the worker. Has no effect on cache/memo lookups.
+   */
+  cancelSignal?: AbortSignal;
 }
 
 export type SearchResult =
@@ -205,24 +221,55 @@ export async function findSeed(input: SearchInput): Promise<SearchResult> {
     );
   }
 
-  const outcome: WorkerOutcome = await liveSearchSemaphore.withSlot(async () => {
-    const job = runWorker(
-      {
-        id: hash.slice(0, 16),
-        mc: input.mc,
-        large_biomes: input.largeBiomes,
-        radius: input.radius.blocks,
-        biomes: [...input.biomeIds],
-        structures: [...input.structureIds],
-        exclude_seeds: (input.excludeSeeds ?? []).map((v) => v.toString()),
-        max_seeds: config.defaultMaxSeeds,
-        timeout_ms: input.timeoutMs ?? config.defaultTimeoutMs,
-        threads: config.defaultThreads || undefined,
+  let outcome: WorkerOutcome;
+  try {
+    outcome = await liveSearchSemaphore.withSlot(
+      async () => {
+        /* Slot granted — tell the bot it's our turn so the UI flips
+         * from "queued" to "searching". */
+        input.liveCallbacks?.onSearchStarted?.();
+        const job = runWorker(
+          {
+            id: hash.slice(0, 16),
+            mc: input.mc,
+            large_biomes: input.largeBiomes,
+            radius: input.radius.blocks,
+            biomes: [...input.biomeIds],
+            structures: [...input.structureIds],
+            exclude_seeds: (input.excludeSeeds ?? []).map((v) => v.toString()),
+            max_seeds: config.defaultMaxSeeds,
+            timeout_ms: input.timeoutMs ?? config.defaultTimeoutMs,
+            threads: config.defaultThreads || undefined,
+          },
+          input.callbacks ?? {},
+        );
+        /* Forward cancellation: once the slot is acquired, the abort
+         * signal stops affecting the queue — instead, we send SIGTERM
+         * to the running worker so it exits with a `cancelled` line. */
+        const onCancelWorker = (): void => job.cancel();
+        input.cancelSignal?.addEventListener("abort", onCancelWorker, { once: true });
+        try {
+          return await job.wait();
+        } finally {
+          input.cancelSignal?.removeEventListener("abort", onCancelWorker);
+        }
       },
-      input.callbacks ?? {},
+      {
+        signal: input.cancelSignal,
+        onQueued: input.liveCallbacks?.onQueued,
+        onPositionChanged: input.liveCallbacks?.onPositionChanged,
+      },
     );
-    return await job.wait();
-  });
+  } catch (err) {
+    /* Cancellation while still in the queue (semaphore rejected the
+     * acquire). Cache/memo lookups already completed without a credit
+     * debit. Surface as a regular cancelled outcome so the handler
+     * doesn't need to special-case error vs. cancel. */
+    if (input.cancelSignal?.aborted) {
+      return { ok: false, reason: "cancelled" };
+    }
+    throw err;
+  }
   if (outcome.kind === "result") {
     const r = outcome.message;
     await memoizeResult({

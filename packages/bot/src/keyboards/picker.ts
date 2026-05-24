@@ -139,6 +139,17 @@ export function resultKeyboard(): InlineKeyboard {
     .text("💎 Купить кредиты", "buy:open");
 }
 
+/**
+ * Keyboard shown while a live search is queued or running. The single
+ * Cancel button stops the search: if still queued, the request is
+ * dequeued without cost; if already running, the worker is killed and
+ * no credit is debited (handler logic gates the debit on a successful
+ * result).
+ */
+export function liveSearchInProgressKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text("❌ Отменить поиск", "search:cancel");
+}
+
 /** Used to render a list of currently selected items for the summary. */
 export function listSelected(
   source: ReadonlyArray<BiomeInfo | StructureInfo>,

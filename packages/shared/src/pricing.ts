@@ -8,7 +8,7 @@
  * by design (zero marginal cost on our side; promotes virality).
  */
 
-export type PackKind = "trial" | "small" | "large" | "pro_month";
+export type PackKind = "small" | "large" | "pro_month";
 
 export interface Pack {
   readonly id: PackKind;
@@ -22,15 +22,6 @@ export interface Pack {
 }
 
 export const PACKS: readonly Pack[] = [
-  {
-    id: "trial",
-    nameRu: "Попробовать",
-    descRu: "1 живой поиск сида с твоими критериями",
-    stars: 1,
-    usdtPrice: 0.02,
-    credits: 1,
-    subscriptionDays: 0,
-  },
   {
     id: "small",
     nameRu: "Малый пак",

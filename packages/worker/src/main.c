@@ -387,8 +387,13 @@ static int run_map_mode(void) {
         fprintf(stderr, "seed_worker: map malloc pixels failed\n");
         return 1;
     }
+    /* flip=1 → image row 0 corresponds to cache row j=0 (most negative z =
+     * north). This matches the standard north-up map convention and the
+     * bot's worldToPx() projection. With flip=0 the image would be
+     * vertically mirrored (south at top), causing pins to land on the
+     * wrong side. */
     biomesToImage(pixels, biomeColors, cache,
-                  (unsigned int)size, (unsigned int)size, 1, 0);
+                  (unsigned int)size, (unsigned int)size, 1, 1);
 
     /* Write PPM (P6) header + raw RGB to stdout. The bot reads the whole
      * blob then decodes it. */

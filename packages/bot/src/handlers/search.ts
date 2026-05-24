@@ -30,6 +30,7 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 import {
   biomePickerKeyboard,
+  liveSearchInProgressKeyboard,
   listSelected,
   radiusKeyboard,
   resultKeyboard,
@@ -62,6 +63,14 @@ function newState(version: McVersion): PickerState {
     excludeSeeds: new Set(),
   };
 }
+
+/**
+ * Per-user controller for the currently-running live search. Filled when
+ * a user enters the live search path (queue or worker) and cleared on
+ * any outcome. The "Cancel" button callback aborts via this controller
+ * which dequeues a still-queued waiter or SIGTERMs the running worker.
+ */
+const activeLiveSearches = new Map<number, AbortController>();
 
 function summaryText(state: PickerState): string {
   return [
@@ -247,6 +256,20 @@ export async function handleSearchCallback(
   if (data === "search:next") {
     await ctx.answerCallbackQuery({ text: "Ищу другой сид…" });
     await runSearch(ctx, state, true);
+    return;
+  }
+
+  if (data === "search:cancel") {
+    /* Cancel triggers the AbortController associated with the user. The
+     * actual UI update (text + reply markup) is handled inside runSearch
+     * once the cancelled outcome propagates back; we just ack here. */
+    const ac = activeLiveSearches.get(ctx.from.id);
+    if (!ac) {
+      await ctx.answerCallbackQuery({ text: "Поиск уже завершён" });
+      return;
+    }
+    ac.abort();
+    await ctx.answerCallbackQuery({ text: "Останавливаю…" });
     return;
   }
 
@@ -495,40 +518,107 @@ async function runSearch(
   // flight (worker process still running). Prevents fork-bomb spam.
   if (!tryAcquireLive(user.tg_id)) {
     await setStatus(
-      "⏳ Предыдущий поиск ещё работает. Дождись результата или нажми «Остановить».",
-      { reply_markup: resultKeyboard() },
+      "⏳ Предыдущий поиск ещё работает. Дождись результата или нажми «Отменить поиск».",
+      { reply_markup: liveSearchInProgressKeyboard() },
     );
     return;
   }
-  await setStatus("🔥 Запускаю движок на cubiomes…\n0 сидов проверено");
+  /* Start optimistic: assume slot will be free, immediate engine launch.
+   * If onQueued fires, we flip to the queued UI. The cancel button is
+   * present from the start so the user can bail out at any point. */
+  await setStatus("🔥 Запускаю движок на cubiomes…\n0 сидов проверено", {
+    reply_markup: liveSearchInProgressKeyboard(),
+  });
+
+  /* AbortController binds the "Cancel" button to the in-flight search.
+   * Aborting before the slot is granted dequeues the waiter; after the
+   * slot is granted, the same controller is used to SIGTERM the worker
+   * inside services/search.ts. */
+  const ac = new AbortController();
+  activeLiveSearches.set(user.tg_id, ac);
+
+  /* Progress / position updates are coalesced to at most one Telegram
+   * edit per second per user to stay well within rate limits. */
   let lastUpdate = 0;
+  const rateLimitedEdit = (text: string): void => {
+    const now = Date.now();
+    if (now - lastUpdate < 1000) return;
+    lastUpdate = now;
+    ctx.api
+      .editMessageText(chatId, statusMsgId, text, {
+        parse_mode: "HTML",
+        reply_markup: liveSearchInProgressKeyboard(),
+      })
+      .catch((err) => logger.debug({ err }, "live status edit failed"));
+  };
+
   let liveResult;
   try {
-  liveResult = await findSeed({
-    userId: user.id,
-    mc: state.version,
-    largeBiomes: false,
-    radius: state.radius,
-    biomeIds: Array.from(state.biomes),
-    structureIds: Array.from(state.structures),
-    excludeSeeds: exclude,
-    callbacks: {
-      onProgress: (p) => {
-        const now = Date.now();
-        if (now - lastUpdate < 1000) return;
-        lastUpdate = now;
-        ctx.api
-          .editMessageText(
-            chatId,
-            statusMsgId,
-            `🔥 Ищу сид (${Math.round(p.elapsed_ms / 1000)}c)…\nПроверено ${p.seeds_tested.toLocaleString("ru-RU")} сидов · ${p.seeds_per_sec.toLocaleString("ru-RU")} сид/с`,
-          )
-          .catch((err) => logger.debug({ err }, "progress edit failed"));
+    liveResult = await findSeed({
+      userId: user.id,
+      mc: state.version,
+      largeBiomes: false,
+      radius: state.radius,
+      biomeIds: Array.from(state.biomes),
+      structureIds: Array.from(state.structures),
+      excludeSeeds: exclude,
+      cancelSignal: ac.signal,
+      liveCallbacks: {
+        onQueued: (pos) => {
+          /* First time the user lands in the queue. The `setStatus`
+           * call above happened before findSeed; this overrides it
+           * with the queued message. Bypasses the 1s rate-limit so
+           * the user immediately sees they're queued. */
+          ctx.api
+            .editMessageText(
+              chatId,
+              statusMsgId,
+              `⏳ Свободных потоков нет, поиск встал в очередь.\nТвоя позиция: <b>${pos}</b>. Жду когда освободится…`,
+              {
+                parse_mode: "HTML",
+                reply_markup: liveSearchInProgressKeyboard(),
+              },
+            )
+            .catch((err) => logger.debug({ err }, "queued status edit failed"));
+        },
+        onPositionChanged: (pos) => {
+          if (pos === 0) {
+            /* Slot will be granted in a moment; switch to "starting". */
+            rateLimitedEdit("🔥 Запускаю движок на cubiomes…\n0 сидов проверено");
+          } else {
+            rateLimitedEdit(
+              `⏳ Поиск в очереди. Твоя позиция: <b>${pos}</b>.\nЖду когда освободится…`,
+            );
+          }
+        },
+        onSearchStarted: () => {
+          /* Bypass rate limit: this is a state transition, not noisy
+           * progress. Tells the user the engine actually started. */
+          lastUpdate = Date.now();
+          ctx.api
+            .editMessageText(
+              chatId,
+              statusMsgId,
+              "🔥 Запускаю движок на cubiomes…\n0 сидов проверено",
+              {
+                parse_mode: "HTML",
+                reply_markup: liveSearchInProgressKeyboard(),
+              },
+            )
+            .catch((err) => logger.debug({ err }, "start status edit failed"));
+        },
       },
-    },
-  });
+      callbacks: {
+        onProgress: (p) => {
+          rateLimitedEdit(
+            `🔥 Ищу сид (${Math.round(p.elapsed_ms / 1000)}c)…\nПроверено ${p.seeds_tested.toLocaleString("ru-RU")} сидов · ${p.seeds_per_sec.toLocaleString("ru-RU")} сид/с`,
+          );
+        },
+      },
+    });
   } finally {
     releaseLive(user.tg_id);
+    activeLiveSearches.delete(user.tg_id);
   }
 
   let debited = 0;
@@ -573,9 +663,16 @@ async function runSearch(
       reply_markup: resultKeyboard(),
     });
   } else if (liveResult.reason === "cancelled") {
-    await setStatus("⏹ Поиск остановлен.");
+    /* No credit was debited (we only debit on `ok`) so the user pays
+     * nothing for a cancelled search. Drop the cancel button — the
+     * search is no longer in flight. */
+    await setStatus("⏹ Поиск остановлен. Кредит не списан.", {
+      reply_markup: resultKeyboard(),
+    });
   } else {
-    await setStatus(`⚠️ Ошибка поиска: ${liveResult.detail ?? liveResult.reason}`);
+    await setStatus(`⚠️ Ошибка поиска: ${liveResult.detail ?? liveResult.reason}`, {
+      reply_markup: resultKeyboard(),
+    });
   }
 
   await recordSearchHistory({
