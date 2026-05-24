@@ -1,18 +1,20 @@
-version: "3.9"
-
 # Local + RU-server deployment.
 #
 # Single-host setup that keeps everything close to disk + CPU. The bot talks
 # to Postgres over the docker network and to the C worker via local spawn
 # (worker binaries are baked into the bot image).
 #
-# To deploy to your RU server:
+# To deploy to your server:
 #   1. Copy this repo to the server
 #   2. Create .env from .env.example
 #   3. docker compose pull && docker compose up -d --build
 #
 # Long-polling means no public IP / port-forwarding is required — only
 # outbound 443 to Telegram + crypt.bot.
+#
+# Resource limits and the health endpoint are tuned for a small VPS
+# (2-4 vCPU, 4-8 GB RAM, ~100 users/day). Override BOT_CPUS / POSTGRES_CPUS
+# in .env to match your host.
 
 services:
   postgres:
@@ -28,6 +30,16 @@ services:
       test: ["CMD-SHELL", "pg_isready -U kruto52"]
       interval: 5s
       retries: 10
+    # Resource guardrails so a runaway worker can't starve Postgres of
+    # CPU or RAM. Postgres is largely I/O-bound for this workload.
+    cpus: ${POSTGRES_CPUS:-1.0}
+    mem_limit: ${POSTGRES_MEM:-1g}
+    mem_reservation: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   bot:
     build:
@@ -44,8 +56,34 @@ services:
       WORKER_BINARY: /usr/local/bin/seed_worker
       PRECOMPUTE_BINARY: /usr/local/bin/seed_precompute
       MIGRATIONS_DIR: /app/db/migrations
-    # Long-polling: no inbound ports needed. For CryptoBot webhooks you'll
-    # need to expose a port and front it with a reverse proxy.
+    # CPU + memory ceiling. The C worker process(es) sit inside the same
+    # container so this also bounds total worker CPU. Tune via BOT_CPUS /
+    # BOT_MEM in .env. Default 4 vCPU matches the recommended 4 vCPU VPS.
+    cpus: ${BOT_CPUS:-4.0}
+    mem_limit: ${BOT_MEM:-2g}
+    mem_reservation: 256m
+    # Expose the /healthz endpoint for external uptime monitors. Comment
+    # out if you don't want it reachable from the host.
+    ports:
+      - "${HEALTH_PORT:-8080}:8080"
+    # Healthcheck uses Node's built-in fetch (no extra packages needed in
+    # the slim image). Falls back to non-zero exit on any failure.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Log rotation: docker keeps 5 × 20 MB = 100 MB max per container.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   pgdata:

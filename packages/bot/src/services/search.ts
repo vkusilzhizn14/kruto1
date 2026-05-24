@@ -33,6 +33,7 @@ import {
   memoizeResult,
   recordDemand,
 } from "./cache.js";
+import { liveSearchSemaphore } from "./concurrency.js";
 import { pool } from "./db.js";
 import { resolveSeed, runWorker, type WorkerCallbacks, type WorkerOutcome } from "./worker.js";
 
@@ -189,24 +190,39 @@ export async function findSeed(input: SearchInput): Promise<SearchResult> {
     return { ok: false, reason: "live_disabled" };
   }
 
-  // Live worker fallback.
-  const job = runWorker(
-    {
-      id: hash.slice(0, 16),
-      mc: input.mc,
-      large_biomes: input.largeBiomes,
-      radius: input.radius.blocks,
-      biomes: [...input.biomeIds],
-      structures: [...input.structureIds],
-      exclude_seeds: (input.excludeSeeds ?? []).map((v) => v.toString()),
-      max_seeds: config.defaultMaxSeeds,
-      timeout_ms: input.timeoutMs ?? config.defaultTimeoutMs,
-      threads: config.defaultThreads || undefined,
-    },
-    input.callbacks ?? {},
-  );
+  // Live worker fallback — gated by the live-search semaphore so we never
+  // run more than `liveSearchConcurrency` cubiomes processes at once.
+  const queueDepthBeforeAcquire = liveSearchSemaphore.queued;
+  if (queueDepthBeforeAcquire > 0 || liveSearchSemaphore.inFlight >= liveSearchSemaphore.limit) {
+    logger.info(
+      {
+        hash: hash.slice(0, 16),
+        inFlight: liveSearchSemaphore.inFlight,
+        queued: queueDepthBeforeAcquire,
+        limit: liveSearchSemaphore.limit,
+      },
+      "live search queued",
+    );
+  }
 
-  const outcome: WorkerOutcome = await job.wait();
+  const outcome: WorkerOutcome = await liveSearchSemaphore.withSlot(async () => {
+    const job = runWorker(
+      {
+        id: hash.slice(0, 16),
+        mc: input.mc,
+        large_biomes: input.largeBiomes,
+        radius: input.radius.blocks,
+        biomes: [...input.biomeIds],
+        structures: [...input.structureIds],
+        exclude_seeds: (input.excludeSeeds ?? []).map((v) => v.toString()),
+        max_seeds: config.defaultMaxSeeds,
+        timeout_ms: input.timeoutMs ?? config.defaultTimeoutMs,
+        threads: config.defaultThreads || undefined,
+      },
+      input.callbacks ?? {},
+    );
+    return await job.wait();
+  });
   if (outcome.kind === "result") {
     const r = outcome.message;
     await memoizeResult({

@@ -43,6 +43,7 @@ import { handleStats } from "./handlers/stats.js";
 import { PRO_TRIAL_CALLBACK, handleProTrialActivate } from "./handlers/trial.js";
 import { rateLimit } from "./middleware/rate_limit.js";
 import { migrate } from "./services/db.js";
+import { startHealthServer } from "./services/health.js";
 import { startPrecomputeLoop } from "./services/precompute_scheduler.js";
 
 // --- Proxy ---
@@ -113,6 +114,7 @@ bot.on("message:successful_payment", handleSuccessfulPayment);
 async function main(): Promise<void> {
   await migrate();
   logger.info("migrations applied");
+  startHealthServer();
   startPrecomputeLoop();
   const runner = run(bot, { runner: { fetch: { allowed_updates: ["message", "callback_query", "pre_checkout_query"] } } });
   logger.info({ workerPath: config.workerPath, precomputePath: config.precomputePath }, "bot started");

@@ -7,6 +7,7 @@
  */
 
 import { mkdirSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 
 function required(key: string): string {
@@ -39,6 +40,17 @@ const migrationsDir = resolve(optional("MIGRATIONS_DIR", "../../db/migrations"))
 const stateDir = resolve(optional("STATE_DIR", "/tmp/kruto52-state"));
 mkdirSync(stateDir, { recursive: true });
 
+/* Half the available cores per worker, leaving headroom for a parallel
+ * second search + Postgres + Node. Override via WORKER_THREADS in .env. */
+const defaultWorkerThreads = Math.max(1, Math.floor(availableParallelism() / 2));
+/* One live worker per `defaultWorkerThreads`, but at least 1, at most 4 by
+ * default. Cache + memo hits bypass the semaphore, so the ceiling only
+ * affects the small fraction of requests that fall through to the C worker. */
+const defaultLiveConcurrency = Math.max(
+  1,
+  Math.min(4, Math.floor(availableParallelism() / defaultWorkerThreads)),
+);
+
 export const config = {
   // Telegram
   botToken: required("BOT_TOKEN"),
@@ -57,7 +69,14 @@ export const config = {
   // Worker
   workerPath,
   precomputePath,
-  defaultThreads: optionalNum("WORKER_THREADS", 0), // 0 = all cores
+  /* Threads per C worker process. 0 = use all cores (legacy behaviour,
+   * fine for a single-tenant local dev box, oversubscribes on a shared
+   * VPS). Default scales with available parallelism. */
+  defaultThreads: optionalNum("WORKER_THREADS", defaultWorkerThreads),
+  /* Maximum number of concurrent live C worker processes. Cache and memo
+   * hits are free; this ceiling only throttles cache misses to prevent
+   * 3+ simultaneous CPU-bound searches from saturating the host. */
+  liveSearchConcurrency: optionalNum("LIVE_SEARCH_CONCURRENCY", defaultLiveConcurrency),
   defaultTimeoutMs: optionalNum("SEARCH_TIMEOUT_MS", 30_000),
   /* No hard seed cap by default — `SEARCH_TIMEOUT_MS` alone bounds live
    * searches. Worker iterates with uint64 so this huge default behaves as
@@ -83,4 +102,7 @@ export const config = {
   // Ops
   stateDir,
   logLevel: optional("LOG_LEVEL", "info"),
+  /* HTTP health-check endpoint port. Used by Docker healthcheck and
+   * external uptime monitors. Set to 0 to disable. */
+  healthPort: optionalNum("HEALTH_PORT", 8080),
 } as const;
