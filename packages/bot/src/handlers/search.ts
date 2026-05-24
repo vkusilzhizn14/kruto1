@@ -69,6 +69,12 @@ function newState(version: McVersion): PickerState {
  * a user enters the live search path (queue or worker) and cleared on
  * any outcome. The "Cancel" button callback aborts via this controller
  * which dequeues a still-queued waiter or SIGTERMs the running worker.
+ *
+ * Keyed on the Telegram user id (ctx.from.id) as a JS `number`. We
+ * deliberately do NOT use `user.tg_id` because that comes from a
+ * Postgres BIGINT column which node-postgres parses as a string —
+ * `Map.set("123", ac)` then `Map.get(123)` returns undefined and the
+ * cancel button would silently no-op while the search keeps running.
  */
 const activeLiveSearches = new Map<number, AbortController>();
 
@@ -254,6 +260,18 @@ export async function handleSearchCallback(
   }
 
   if (data === "search:next") {
+    /* Defensive guard: if state hydration missed (e.g. picker_state row
+     * pruned, or upgrade from an older bot that didn't persist state),
+     * `state` is the default `newState("1.21")` with no filters. Running
+     * a "find another" against an empty filter would match anything and
+     * return a near-random cache hit. Refuse instead. */
+    if (state.biomes.size === 0 && state.structures.size === 0) {
+      await ctx.answerCallbackQuery({
+        text: "Сессия истекла — нажми /search чтобы начать заново.",
+        show_alert: true,
+      });
+      return;
+    }
     await ctx.answerCallbackQuery({ text: "Ищу другой сид…" });
     await runSearch(ctx, state, true);
     return;
@@ -265,7 +283,11 @@ export async function handleSearchCallback(
      * once the cancelled outcome propagates back; we just ack here. */
     const ac = activeLiveSearches.get(ctx.from.id);
     if (!ac) {
-      await ctx.answerCallbackQuery({ text: "Поиск уже завершён" });
+      await ctx.answerCallbackQuery({ text: "Поиск уже остановлен" });
+      return;
+    }
+    if (ac.signal.aborted) {
+      await ctx.answerCallbackQuery({ text: "Уже останавливаю…" });
       return;
     }
     ac.abort();
@@ -523,19 +545,18 @@ async function runSearch(
     );
     return;
   }
+  /* Register the AbortController in the cancel map BEFORE rendering the
+   * cancel button so there is no window where the user can click cancel
+   * and find no controller registered. */
+  const ac = new AbortController();
+  activeLiveSearches.set(ctx.from.id, ac);
+
   /* Start optimistic: assume slot will be free, immediate engine launch.
    * If onQueued fires, we flip to the queued UI. The cancel button is
    * present from the start so the user can bail out at any point. */
   await setStatus("🔥 Запускаю движок на cubiomes…\n0 сидов проверено", {
     reply_markup: liveSearchInProgressKeyboard(),
   });
-
-  /* AbortController binds the "Cancel" button to the in-flight search.
-   * Aborting before the slot is granted dequeues the waiter; after the
-   * slot is granted, the same controller is used to SIGTERM the worker
-   * inside services/search.ts. */
-  const ac = new AbortController();
-  activeLiveSearches.set(user.tg_id, ac);
 
   /* Progress / position updates are coalesced to at most one Telegram
    * edit per second per user to stay well within rate limits. */
@@ -618,7 +639,7 @@ async function runSearch(
     });
   } finally {
     releaseLive(user.tg_id);
-    activeLiveSearches.delete(user.tg_id);
+    activeLiveSearches.delete(ctx.from.id);
   }
 
   let debited = 0;

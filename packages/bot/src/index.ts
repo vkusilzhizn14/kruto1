@@ -45,6 +45,7 @@ import { rateLimit } from "./middleware/rate_limit.js";
 import { migrate } from "./services/db.js";
 import { startHealthServer } from "./services/health.js";
 import { startPrecomputeLoop } from "./services/precompute_scheduler.js";
+import { hydratePickerState } from "./state.js";
 
 // --- Proxy ---
 if (config.proxyUrl) {
@@ -114,6 +115,7 @@ bot.on("message:successful_payment", handleSuccessfulPayment);
 async function main(): Promise<void> {
   await migrate();
   logger.info("migrations applied");
+  await hydratePickerState();
   startHealthServer();
   startPrecomputeLoop();
   const runner = run(bot, { runner: { fetch: { allowed_updates: ["message", "callback_query", "pre_checkout_query"] } } });
