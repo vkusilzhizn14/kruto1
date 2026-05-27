@@ -17,7 +17,7 @@ import type { McVersion } from "@kruto52/shared";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 
-import { insertSeedCacheRow } from "./cache.js";
+import { insertSeedCacheRow, upsertSeedCacheFull } from "./cache.js";
 import { pool } from "./db.js";
 
 interface PrecomputeRow {
@@ -98,6 +98,72 @@ export async function runPrecomputeBatch(): Promise<number> {
     );
     proc.on("error", reject);
     proc.on("close", () => resolve(inserted));
+  });
+}
+
+/**
+ * Compute the full bitmask for a single known seed via seed_enrich
+ * and upsert it into seed_cache. Fire-and-forget safe.
+ */
+export async function enrichSeedCache(
+  seed: bigint,
+  mc: McVersion,
+  largeBiomes: boolean,
+): Promise<void> {
+  if (!config.enrichLiveResults) return;
+  return new Promise<void>((resolve) => {
+    const proc = spawn(
+      config.enrichPath,
+      [mc, largeBiomes ? "1" : "0", seed.toString()],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let buf = "";
+    proc.stdout.on("data", (chunk: Buffer) => {
+      buf += chunk.toString("utf8");
+    });
+    proc.stderr.on("data", (chunk: Buffer) =>
+      logger.debug({ stderr: chunk.toString("utf8").trim() }, "enrich stderr"),
+    );
+    proc.on("error", (err) => {
+      logger.warn({ err, seed: seed.toString() }, "enrichSeedCache spawn error");
+      resolve();
+    });
+    proc.on("close", () => {
+      const line = buf.trim();
+      if (!line) {
+        resolve();
+        return;
+      }
+      let r: PrecomputeRow;
+      try {
+        r = JSON.parse(line) as PrecomputeRow;
+      } catch (err) {
+        logger.warn({ err }, "enrichSeedCache parse error");
+        resolve();
+        return;
+      }
+      upsertSeedCacheFull({
+        seed: BigInt(r.seed),
+        mc: r.mc,
+        largeBiomes: r.large !== 0,
+        masks: {
+          biome_mask_100: BigInt(r.biome_mask_100),
+          struct_mask_100: BigInt(r.struct_mask_100),
+          biome_mask_200: BigInt(r.biome_mask_200),
+          struct_mask_200: BigInt(r.struct_mask_200),
+          biome_mask_500: BigInt(r.biome_mask_500),
+          struct_mask_500: BigInt(r.struct_mask_500),
+          biome_mask_1000: BigInt(r.biome_mask_1000),
+          struct_mask_1000: BigInt(r.struct_mask_1000),
+        },
+        source: "enriched",
+      })
+        .then(() => resolve())
+        .catch((err) => {
+          logger.warn({ err }, "enrichSeedCache insert failed");
+          resolve();
+        });
+    });
   });
 }
 

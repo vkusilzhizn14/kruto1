@@ -203,6 +203,55 @@ export async function insertSeedCacheRow(input: {
   );
 }
 
+/** Upsert a seed_cache row, OR-merging bitmask bits with any existing row. */
+export async function upsertSeedCacheFull(input: {
+  seed: bigint;
+  mc: McVersion;
+  largeBiomes: boolean;
+  masks: Record<string, bigint>;
+  source: string;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO seed_cache (
+        seed, mc_version, large_biomes,
+        biome_mask_100, struct_mask_100,
+        biome_mask_200, struct_mask_200,
+        biome_mask_500, struct_mask_500,
+        biome_mask_1000, struct_mask_1000,
+        source)
+     VALUES ($1::bigint, $2, $3,
+             $4::bigint, $5::bigint,
+             $6::bigint, $7::bigint,
+             $8::bigint, $9::bigint,
+             $10::bigint, $11::bigint,
+             $12)
+     ON CONFLICT (seed, mc_version, large_biomes) DO UPDATE SET
+         biome_mask_100   = seed_cache.biome_mask_100   | EXCLUDED.biome_mask_100,
+         struct_mask_100  = seed_cache.struct_mask_100  | EXCLUDED.struct_mask_100,
+         biome_mask_200   = seed_cache.biome_mask_200   | EXCLUDED.biome_mask_200,
+         struct_mask_200  = seed_cache.struct_mask_200  | EXCLUDED.struct_mask_200,
+         biome_mask_500   = seed_cache.biome_mask_500   | EXCLUDED.biome_mask_500,
+         struct_mask_500  = seed_cache.struct_mask_500  | EXCLUDED.struct_mask_500,
+         biome_mask_1000  = seed_cache.biome_mask_1000  | EXCLUDED.biome_mask_1000,
+         struct_mask_1000 = seed_cache.struct_mask_1000 | EXCLUDED.struct_mask_1000,
+         source = EXCLUDED.source`,
+    [
+      input.seed.toString(),
+      input.mc,
+      input.largeBiomes,
+      input.masks.biome_mask_100.toString(),
+      input.masks.struct_mask_100.toString(),
+      input.masks.biome_mask_200.toString(),
+      input.masks.struct_mask_200.toString(),
+      input.masks.biome_mask_500.toString(),
+      input.masks.struct_mask_500.toString(),
+      input.masks.biome_mask_1000.toString(),
+      input.masks.struct_mask_1000.toString(),
+      input.source,
+    ],
+  );
+}
+
 /** Helper to get radius from blocks for callers using the shared catalog. */
 export function radiusFromBlocks(blocks: number): RadiusInfo {
   return getRadius(String(blocks));

@@ -36,6 +36,7 @@ function optionalBool(key: string, fallback: boolean): boolean {
 
 const workerPath = resolve(optional("WORKER_BINARY", "../worker/seed_worker"));
 const precomputePath = resolve(optional("PRECOMPUTE_BINARY", "../worker/seed_precompute"));
+const enrichPath = resolve(optional("ENRICH_BINARY", "../worker/seed_enrich"));
 const migrationsDir = resolve(optional("MIGRATIONS_DIR", "../../db/migrations"));
 const stateDir = resolve(optional("STATE_DIR", "/tmp/kruto52-state"));
 mkdirSync(stateDir, { recursive: true });
@@ -69,6 +70,7 @@ export const config = {
   // Worker
   workerPath,
   precomputePath,
+  enrichPath,
   /* Threads per C worker process. 0 = use all cores (legacy behaviour,
    * fine for a single-tenant local dev box, oversubscribes on a shared
    * VPS). Default scales with available parallelism. */
@@ -98,6 +100,14 @@ export const config = {
   precomputeEnabled: optionalBool("PRECOMPUTE_ENABLED", true),
   precomputeIntervalSec: optionalNum("PRECOMPUTE_INTERVAL_SEC", 600),
   precomputeBatchSize: optionalNum("PRECOMPUTE_BATCH_SIZE", 200),
+
+  // Rare-combo explorer
+  explorerEnabled: optionalBool("EXPLORER_ENABLED", true),
+  explorerIntervalSec: optionalNum("EXPLORER_INTERVAL_SEC", 60),
+  explorerTimeoutMs: optionalNum("EXPLORER_TIMEOUT_MS", 120_000),
+
+  // Enrich live-search results with full bitmask
+  enrichLiveResults: optionalBool("ENRICH_LIVE_RESULTS", true),
 
   // Ops
   stateDir,

@@ -35,6 +35,7 @@ import {
 } from "./cache.js";
 import { liveSearchSemaphore } from "./concurrency.js";
 import { pool } from "./db.js";
+import { enrichSeedCache } from "./precompute_scheduler.js";
 import { resolveSeed, runWorker, type WorkerCallbacks, type WorkerOutcome } from "./worker.js";
 
 export interface ResolvedSeedPos {
@@ -279,8 +280,10 @@ export async function findSeed(input: SearchInput): Promise<SearchResult> {
       source: "live",
       ttlSeconds: config.cacheTtlSeconds,
     });
-    // Also persist to seed_cache as a side effect for future bitmask hits.
-    await persistResultToCache(input, BigInt(r.seed));
+    // Full bitmask enrichment in background (doesn't block user response).
+    enrichSeedCache(BigInt(r.seed), input.mc, input.largeBiomes).catch((err) =>
+      logger.error({ err }, "enrichSeedCache failed"),
+    );
     return {
       ok: true,
       outcome: {
@@ -316,68 +319,6 @@ export async function findSeed(input: SearchInput): Promise<SearchResult> {
     return { ok: false, reason: "cancelled" };
   }
   return { ok: false, reason: "error", detail: outcome.message.message };
-}
-
-/** Inserts a minimal seed_cache row when a live search succeeds. */
-async function persistResultToCache(input: SearchInput, seed: bigint): Promise<void> {
-  // Build masks for ALL biomes/structures the user requested, at all four
-  // radii. Since we only know the result fits the user's radius, we keep
-  // the bits set only in that bucket. This is conservative but cheap.
-  // The background precompute pipeline later fills in the other buckets.
-  const bm = biomeMask(input.biomeIds);
-  const sm = structureMask(input.structureIds);
-  const cols: Record<string, string> = {
-    biome_mask_100: "0",
-    struct_mask_100: "0",
-    biome_mask_200: "0",
-    struct_mask_200: "0",
-    biome_mask_500: "0",
-    struct_mask_500: "0",
-    biome_mask_1000: "0",
-    struct_mask_1000: "0",
-  };
-  cols[`biome_mask_${input.radius.blocks}`] = bm.toString();
-  cols[`struct_mask_${input.radius.blocks}`] = sm.toString();
-
-  await pool
-    .query(
-      `INSERT INTO seed_cache (
-          seed, mc_version, large_biomes,
-          biome_mask_100, struct_mask_100,
-          biome_mask_200, struct_mask_200,
-          biome_mask_500, struct_mask_500,
-          biome_mask_1000, struct_mask_1000,
-          source)
-       VALUES ($1::bigint, $2, $3,
-               $4::bigint, $5::bigint,
-               $6::bigint, $7::bigint,
-               $8::bigint, $9::bigint,
-               $10::bigint, $11::bigint,
-               'live')
-       ON CONFLICT (seed, mc_version, large_biomes) DO UPDATE SET
-           biome_mask_100   = seed_cache.biome_mask_100   | EXCLUDED.biome_mask_100,
-           struct_mask_100  = seed_cache.struct_mask_100  | EXCLUDED.struct_mask_100,
-           biome_mask_200   = seed_cache.biome_mask_200   | EXCLUDED.biome_mask_200,
-           struct_mask_200  = seed_cache.struct_mask_200  | EXCLUDED.struct_mask_200,
-           biome_mask_500   = seed_cache.biome_mask_500   | EXCLUDED.biome_mask_500,
-           struct_mask_500  = seed_cache.struct_mask_500  | EXCLUDED.struct_mask_500,
-           biome_mask_1000  = seed_cache.biome_mask_1000  | EXCLUDED.biome_mask_1000,
-           struct_mask_1000 = seed_cache.struct_mask_1000 | EXCLUDED.struct_mask_1000`,
-      [
-        seed.toString(),
-        input.mc,
-        input.largeBiomes,
-        cols.biome_mask_100,
-        cols.struct_mask_100,
-        cols.biome_mask_200,
-        cols.struct_mask_200,
-        cols.biome_mask_500,
-        cols.struct_mask_500,
-        cols.biome_mask_1000,
-        cols.struct_mask_1000,
-      ],
-    )
-    .catch((err) => logger.error({ err }, "failed to persist live result to cache"));
 }
 
 /** Persists the search to `search_history`. */

@@ -45,6 +45,7 @@ import { rateLimit } from "./middleware/rate_limit.js";
 import { migrate } from "./services/db.js";
 import { startHealthServer } from "./services/health.js";
 import { startPrecomputeLoop } from "./services/precompute_scheduler.js";
+import { startExplorerLoop } from "./services/rare_explorer.js";
 import { hydratePickerState } from "./state.js";
 
 // --- Proxy ---
@@ -118,6 +119,7 @@ async function main(): Promise<void> {
   await hydratePickerState();
   startHealthServer();
   startPrecomputeLoop();
+  startExplorerLoop();
   const runner = run(bot, { runner: { fetch: { allowed_updates: ["message", "callback_query", "pre_checkout_query"] } } });
   logger.info({ workerPath: config.workerPath, precomputePath: config.precomputePath }, "bot started");
   const shutdown = async (sig: string): Promise<void> => {

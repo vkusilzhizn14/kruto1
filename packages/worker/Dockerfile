@@ -18,5 +18,5 @@ FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-COPY --from=build /worker/seed_worker /worker/seed_precompute /usr/local/bin/
+COPY --from=build /worker/seed_worker /worker/seed_precompute /worker/seed_enrich /usr/local/bin/
 CMD ["/usr/local/bin/seed_worker"]

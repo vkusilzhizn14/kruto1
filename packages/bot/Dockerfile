@@ -27,7 +27,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-COPY --from=worker-build /worker/seed_worker /worker/seed_precompute /usr/local/bin/
+COPY --from=worker-build /worker/seed_worker /worker/seed_precompute /worker/seed_enrich /usr/local/bin/
 COPY --from=bot-build /app/package.json /app/package-lock.json* /app/tsconfig.base.json ./
 COPY --from=bot-build /app/packages/shared/package.json packages/shared/package.json
 COPY --from=bot-build /app/packages/shared/dist packages/shared/dist
@@ -37,6 +37,7 @@ COPY db db
 RUN npm install --omit=dev --omit=optional --workspaces --include-workspace-root
 ENV WORKER_BINARY=/usr/local/bin/seed_worker
 ENV PRECOMPUTE_BINARY=/usr/local/bin/seed_precompute
+ENV ENRICH_BINARY=/usr/local/bin/seed_enrich
 ENV MIGRATIONS_DIR=/app/db/migrations
 ENV NODE_ENV=production
 CMD ["node", "packages/bot/dist/index.js"]
