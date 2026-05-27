@@ -78,3 +78,15 @@ export function structureMask(ids: readonly string[]): bigint {
   }
   return mask;
 }
+
+/**
+ * Inverse of {@link structureMask}: returns the ids whose bit is set in
+ * the given mask. Unknown bits are ignored.
+ */
+export function structureIdsFromMask(mask: bigint): string[] {
+  const out: string[] = [];
+  for (const s of STRUCTURES) {
+    if ((mask & (1n << BigInt(s.bit))) !== 0n) out.push(s.id);
+  }
+  return out;
+}

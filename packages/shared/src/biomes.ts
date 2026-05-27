@@ -120,3 +120,16 @@ export function biomeMask(ids: readonly string[]): bigint {
   }
   return mask;
 }
+
+/**
+ * Inverse of {@link biomeMask}: returns the ids whose bit is set in the
+ * given mask. Unknown bits (set in the mask but with no matching biome)
+ * are ignored. Order matches `BIOMES` (i.e. ordered by bit position).
+ */
+export function biomeIdsFromMask(mask: bigint): string[] {
+  const out: string[] = [];
+  for (const b of BIOMES) {
+    if ((mask & (1n << BigInt(b.bit))) !== 0n) out.push(b.id);
+  }
+  return out;
+}
