@@ -2,8 +2,14 @@
 #
 # Targets:
 #   release        — default, optimized build with -O3 -fwrapv (portable)
-#   native         — -march=native -ffast-math (use when host == deploy host)
+#   native         — release + -march=native + -flto. NO -ffast-math, so
+#                    floating-point biome/climate results stay bit-exact
+#                    with release. Safe to deploy when build host == prod
+#                    host (~+15–20% throughput on modern CPUs).
 #   debug          — -O0 -ggdb3 + ASan
+#   smoke          — parity test: builds release + native side-by-side and
+#                    diffs the seed_enrich JSON for a fixed set of seeds.
+#                    Aborts non-zero if any output differs.
 #   clean          — remove build artefacts
 #
 # Outputs:
@@ -27,14 +33,19 @@ WORKER_OBJ := src/main.o src/json.o src/search.o src/util.o
 PRECOMPUTE_OBJ := src/precompute.o src/json.o src/search.o src/util.o
 ENRICH_OBJ := src/enrich.o src/search.o src/util.o
 
-.PHONY: all release native debug clean cubiomes
+.PHONY: all release native debug smoke clean cubiomes
 
 all: release
 
 release: CFLAGS += -O3 -fPIC
 release: seed_worker seed_precompute seed_enrich
 
-native: CFLAGS += -O3 -march=native -ffast-math -flto -fPIC
+# Native build is intentionally WITHOUT -ffast-math: cubiomes climate
+# noise is sensitive to reassociation and would silently shift biome
+# boundaries, making cached bitmasks disagree with new live searches.
+# -march=native + -flto alone gives the bulk of the win on a modern CPU.
+native: CFLAGS += -O3 -march=native -flto -fPIC
+native: LDFLAGS += -flto
 native: seed_worker seed_precompute seed_enrich
 
 debug: CFLAGS := -O0 -ggdb3 -fwrapv -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -fsanitize=address
@@ -62,3 +73,10 @@ seed_enrich: $(ENRICH_OBJ) $(CUBIOMES_LIB)
 clean:
 	rm -f src/*.o seed_worker seed_precompute seed_enrich
 	$(MAKE) -C $(CUBIOMES_DIR) clean
+
+# Parity smoke test: builds release + native side-by-side and verifies
+# they produce byte-identical seed_enrich output for a fixed seed set.
+# Any drift here means the native build has changed cubiomes semantics
+# (typically because someone added -ffast-math) and MUST NOT be deployed.
+smoke:
+	@./smoke_test.sh
