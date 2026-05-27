@@ -35,6 +35,7 @@ import {
 } from "./cache.js";
 import { liveSearchSemaphore } from "./concurrency.js";
 import { pool } from "./db.js";
+import { recordSearchMetric } from "./metrics.js";
 import { enrichSeedCache } from "./precompute_scheduler.js";
 import { resolveSeed, runWorker, type WorkerCallbacks, type WorkerOutcome } from "./worker.js";
 
@@ -82,6 +83,13 @@ export interface SearchInput {
    * the worker. Has no effect on cache/memo lookups.
    */
   cancelSignal?: AbortSignal;
+  /**
+   * Marks the request as originating from a background job (explorer,
+   * backfill, curated warmer). Background requests are excluded from
+   * user-facing performance stats so the operator sees the experience
+   * real users get, not the synthetic load we generate ourselves.
+   */
+  isBackground?: boolean;
 }
 
 export type SearchResult =
@@ -199,6 +207,17 @@ export async function findSeed(input: SearchInput): Promise<SearchResult> {
       elapsedMs: elapsed,
       seedsTested: 0,
     };
+    void recordSearchMetric({
+      userId: input.userId,
+      queryHash: hash,
+      source: outcome.source,
+      elapsedMs: elapsed,
+      seedsTested: 0,
+      found: true,
+      radius: input.radius.blocks,
+      mcVersion: input.mc,
+      isBackground: input.isBackground === true,
+    });
     return { ok: true, outcome };
   }
   await recordDemand({ hash, q, cacheMiss: true });
@@ -284,6 +303,17 @@ export async function findSeed(input: SearchInput): Promise<SearchResult> {
     enrichSeedCache(BigInt(r.seed), input.mc, input.largeBiomes).catch((err) =>
       logger.error({ err }, "enrichSeedCache failed"),
     );
+    void recordSearchMetric({
+      userId: input.userId,
+      queryHash: hash,
+      source: "live",
+      elapsedMs: Number(r.elapsed_ms ?? 0),
+      seedsTested: Number(r.seeds_tested ?? 0),
+      found: true,
+      radius: input.radius.blocks,
+      mcVersion: input.mc,
+      isBackground: input.isBackground === true,
+    });
     return {
       ok: true,
       outcome: {
@@ -307,6 +337,17 @@ export async function findSeed(input: SearchInput): Promise<SearchResult> {
     };
   }
   if (outcome.kind === "not_found") {
+    void recordSearchMetric({
+      userId: input.userId,
+      queryHash: hash,
+      source: "not_found",
+      elapsedMs: Number(outcome.message.elapsed_ms ?? 0),
+      seedsTested: Number(outcome.message.seeds_tested ?? 0),
+      found: false,
+      radius: input.radius.blocks,
+      mcVersion: input.mc,
+      isBackground: input.isBackground === true,
+    });
     return {
       ok: false,
       reason: "not_found",
@@ -316,6 +357,17 @@ export async function findSeed(input: SearchInput): Promise<SearchResult> {
     };
   }
   if (outcome.kind === "cancelled") {
+    void recordSearchMetric({
+      userId: input.userId,
+      queryHash: hash,
+      source: "cancelled",
+      elapsedMs: 0,
+      seedsTested: 0,
+      found: false,
+      radius: input.radius.blocks,
+      mcVersion: input.mc,
+      isBackground: input.isBackground === true,
+    });
     return { ok: false, reason: "cancelled" };
   }
   return { ok: false, reason: "error", detail: outcome.message.message };

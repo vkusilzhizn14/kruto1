@@ -39,7 +39,7 @@ import {
   isSearchCallback,
 } from "./handlers/search.js";
 import { handleSpeed } from "./handlers/speed.js";
-import { handleStats } from "./handlers/stats.js";
+import { handleStats, handleStatsCompare } from "./handlers/stats.js";
 import { PRO_TRIAL_CALLBACK, handleProTrialActivate } from "./handlers/trial.js";
 import { rateLimit } from "./middleware/rate_limit.js";
 import { migrate } from "./services/db.js";
@@ -78,6 +78,7 @@ bot.command("buy", handleBuyCommand);
 bot.command("balance", handleBalance);
 bot.command("speed", handleSpeed);
 bot.command("stats", handleStats);
+bot.command("stats_compare", handleStatsCompare);
 bot.command("admin", handleAdminHelp);
 bot.command("grant_credits", handleGrantCredits);
 bot.command("revoke_credits", handleRevokeCredits);
