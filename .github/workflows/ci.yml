@@ -38,3 +38,9 @@ jobs:
       - name: Smoke test seed_precompute
         run: |
           ./packages/worker/seed_precompute 1.21 0 3 42 2 | head -3
+      - name: Parity smoke test (release vs native)
+        run: |
+          # Verifies the native build produces bit-identical seed_enrich
+          # output to release — guards against accidentally adding flags
+          # like -ffast-math that would silently corrupt seed_cache.
+          make -C packages/worker smoke
