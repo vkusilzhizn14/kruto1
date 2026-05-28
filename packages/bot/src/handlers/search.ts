@@ -18,6 +18,9 @@ import {
   BIOMES,
   STRUCTURES,
   type McVersion,
+  type RadiusInfo,
+  type ValidityReport,
+  assessFilterValidity,
   biomesForVersion,
   getPreset,
   getRadius,
@@ -255,7 +258,31 @@ export async function handleSearchCallback(
       return;
     }
     await ctx.answerCallbackQuery({ text: "Ищу сид…" });
-    await runSearch(ctx, state, false);
+    await runSearch(ctx, state, false, false);
+    return;
+  }
+
+  /* User clicked "Искать всё равно" on a validity warning — bypass the
+   * heuristic and run the live search anyway. */
+  if (data === "search:run_force") {
+    await ctx.answerCallbackQuery({ text: "Запускаю поиск…" });
+    await runSearch(ctx, state, false, true);
+    return;
+  }
+
+  /* User clicked "Радиус N" on a validity warning — bump radius to the
+   * next size and try the search again. We pick the next supported
+   * radius above the current one; if already at max, just re-run. */
+  if (data.startsWith("search:radius_upgrade:")) {
+    const target = data.slice("search:radius_upgrade:".length);
+    try {
+      state.radius = getRadius(target);
+      setState(chatId, state);
+    } catch {
+      // unknown radius id — ignore, will re-run with current radius
+    }
+    await ctx.answerCallbackQuery({ text: `Беру радиус ${state.radius.blocks}` });
+    await runSearch(ctx, state, false, false);
     return;
   }
 
@@ -273,7 +300,9 @@ export async function handleSearchCallback(
       return;
     }
     await ctx.answerCallbackQuery({ text: "Ищу другой сид…" });
-    await runSearch(ctx, state, true);
+    /* "Find another" re-runs against the same filter; the user already
+     * passed (or bypassed) validity once, so we skip the check. */
+    await runSearch(ctx, state, true, true);
     return;
   }
 
@@ -396,10 +425,66 @@ async function offerOutOfQuota(
   });
 }
 
+/* Radius IDs in ascending order — must match @kruto52/shared radius
+ * catalog. Used to suggest "the next size up" on validity warnings. */
+const RADIUS_LADDER: readonly string[] = ["100", "200", "500", "1000"];
+
+function nextRadiusId(current: RadiusInfo): string | null {
+  const idx = RADIUS_LADDER.indexOf(String(current.blocks));
+  if (idx < 0 || idx + 1 >= RADIUS_LADDER.length) return null;
+  return RADIUS_LADDER[idx + 1] ?? null;
+}
+
+/**
+ * Renders the validity warning UI with up to three actions:
+ *   • "Искать всё равно"          — bypass and run anyway
+ *   • "📏 Радиус N"               — bump radius one step and run
+ *   • "✏️ Изменить фильтр"        — restart the wizard
+ *
+ * The icon in the header reflects severity: 🚫 for `red` (likely
+ * impossible), ⚠️ for `warn` (technically possible but very rare).
+ */
+async function renderValidityWarning(
+  setStatus: StatusSetter,
+  radius: RadiusInfo,
+  report: ValidityReport,
+): Promise<void> {
+  const icon = report.severity === "red" ? "🚫" : "⚠️";
+  const header =
+    report.severity === "red"
+      ? `${icon} Эта комбинация скорее всего не существует`
+      : `${icon} Очень редкая комбинация`;
+  const lines: string[] = [`<b>${header}</b>`, ""];
+  for (const w of report.warnings) {
+    const bullet = w.severity === "red" ? "• 🚫" : "• ⚠️";
+    lines.push(`${bullet} ${w.reason}`);
+  }
+  lines.push(
+    "",
+    "Что делать:",
+    "• Можешь попробовать всё равно — поиск займёт до 5 минут и может не найти сид.",
+  );
+  const nextId = nextRadiusId(radius);
+  if (nextId) {
+    lines.push(`• Можно увеличить радиус до ${nextId} блоков — шансы найти выше.`);
+  }
+  lines.push("• Или поменять фильтр на менее жёсткий.");
+
+  const kb = new InlineKeyboard();
+  kb.text("🔍 Искать всё равно", "search:run_force").row();
+  if (nextId) {
+    kb.text(`📏 Радиус ${nextId}`, `search:radius_upgrade:${nextId}`).row();
+  }
+  kb.text("✏️ Изменить фильтр", "search:restart");
+
+  await setStatus(lines.join("\n"), { parse_mode: "HTML", reply_markup: kb });
+}
+
 async function runSearch(
   ctx: CallbackQueryContext<Context>,
   state: PickerState,
   another: boolean,
+  bypassValidity: boolean,
 ): Promise<void> {
   if (!ctx.from || !ctx.chat) return;
   const user = await upsertUser({
@@ -510,6 +595,28 @@ async function runSearch(
     });
     await renderResult(ctx, cacheResult.outcome, refreshed, state.radius.blocks, debited > 0, state.version, statusMsgId, usedFree);
     return;
+  }
+
+  /* Step 1b: filter validity check (п.4 of the speed plan).
+   *
+   * We only check on the cache-miss path: cache hits are already free
+   * proof the combination exists. Validity warnings let the user fix
+   * an obviously impossible filter before burning a credit / a free
+   * hit on a doomed 5-minute search. The user can bypass with the
+   * "Search anyway" button (re-enters this handler with
+   * bypassValidity=true).
+   *
+   * Pure heuristic — no I/O — runs in microseconds. */
+  if (!bypassValidity) {
+    const report = assessFilterValidity({
+      biomes: Array.from(state.biomes),
+      structures: Array.from(state.structures),
+      radius: state.radius,
+    });
+    if (report.severity !== "ok") {
+      await renderValidityWarning(setStatus, state.radius, report);
+      return;
+    }
   }
 
   // Step 2: cache miss → pick payment source for the live search
