@@ -31,12 +31,10 @@ export async function handleBalance(ctx: CommandContext<Context> | Context): Pro
     const free = await freeHitsRemainingForUser(user.id, config.freeDailyHits);
     lines.push(`Бесплатных поисков сегодня: <b>${free}</b> из ${config.freeDailyHits}`);
     lines.push("Pro: <i>не активна</i>");
-    if (user.pro_trial_used_at === null) {
-      lines.push("");
-      lines.push("🎁 Доступен <b>бесплатный Pro-триал на 24 часа</b> (один раз на аккаунт).");
-    }
   }
   lines.push("");
   lines.push("Каскад: сначала бесплатные хиты, потом кредиты, потом — покупка или Pro.");
+  lines.push("");
+  lines.push("Купить: <b>/buy</b> — пробный пак (10 запросов), неделя или месяц безлимита.");
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
 }

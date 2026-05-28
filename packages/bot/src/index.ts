@@ -29,7 +29,7 @@ import {
 } from "./handlers/admin.js";
 import { handleBalance } from "./handlers/balance.js";
 import { handleBuyCallback, handleBuyCommand, handlePreCheckout, handleSuccessfulPayment } from "./handlers/buy.js";
-import { handleHelp, handleStart } from "./handlers/start.js";
+import { handleHelp, handleStart, handleTerms } from "./handlers/start.js";
 import { handleHistory } from "./handlers/history.js";
 import {
   handlePreset,
@@ -41,6 +41,8 @@ import {
 import { handleSpeed } from "./handlers/speed.js";
 import { handleStats, handleStatsCompare } from "./handlers/stats.js";
 import { PRO_TRIAL_CALLBACK, handleProTrialActivate } from "./handlers/trial.js";
+// Trial 24h выпилен (п.9, 2026-05-28). Оставляем импорт и регистрацию
+// хэндлера чтобы любые старые кнопки в чатах получали внятный ответ, а не молчали.
 import { rateLimit } from "./middleware/rate_limit.js";
 import { migrate } from "./services/db.js";
 import { startHealthServer } from "./services/health.js";
@@ -79,6 +81,8 @@ bot.command("search", handleSearchCommand);
 bot.command("history", handleHistory);
 bot.command("buy", handleBuyCommand);
 bot.command("balance", handleBalance);
+bot.command("terms", handleTerms);
+bot.command("privacy", handleTerms);
 bot.command("speed", handleSpeed);
 bot.command("stats", handleStats);
 bot.command("stats_compare", handleStatsCompare);

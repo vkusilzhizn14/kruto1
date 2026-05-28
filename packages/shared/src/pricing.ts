@@ -6,9 +6,16 @@
  *
  * One credit = one successful live search. Cache hits do NOT consume credits
  * by design (zero marginal cost on our side; promotes virality).
+ *
+ * Pack lineup (ПО ДОГОВОРУ 2026-05-28):
+ *   • trial_10  — 10 кредитов за 30⭐, без подписки (стартовый порог)
+ *   • pro_week  — 7 дней Pro безлимита за 50⭐ (средняя выгода)
+ *   • pro_month — 30 дней Pro безлимита за 125⭐ (самый выгодный)
+ *
+ * Trial-24h выпилен полностью — порог входа теперь trial_10 пак.
  */
 
-export type PackKind = "small" | "large" | "pro_month";
+export type PackKind = "trial_10" | "pro_week" | "pro_month";
 
 export interface Pack {
   readonly id: PackKind;
@@ -23,29 +30,29 @@ export interface Pack {
 
 export const PACKS: readonly Pack[] = [
   {
-    id: "small",
-    nameRu: "Малый пак",
-    descRu: "15 живых поисков — на пару вечеров",
-    stars: 10,
-    usdtPrice: 0.2,
-    credits: 15,
+    id: "trial_10",
+    nameRu: "Пробный пак",
+    descRu: "10 запросов — попробовать и понять нравится ли",
+    stars: 30,
+    usdtPrice: 0.59,
+    credits: 10,
     subscriptionDays: 0,
   },
   {
-    id: "large",
-    nameRu: "Большой пак",
-    descRu: "100 живых поисков — самый выгодный",
-    stars: 49,
+    id: "pro_week",
+    nameRu: "Подписка на неделю",
+    descRu: "Безлимит живых поисков на 7 дней + приоритет очереди",
+    stars: 50,
     usdtPrice: 0.99,
-    credits: 100,
-    subscriptionDays: 0,
+    credits: 0,
+    subscriptionDays: 7,
   },
   {
     id: "pro_month",
-    nameRu: "Pro подписка",
-    descRu: "Безлимит живых поисков, приоритет очереди и расширенные фильтры на 30 дней",
-    stars: 30,
-    usdtPrice: 0.59,
+    nameRu: "Подписка на месяц",
+    descRu: "Безлимит живых поисков на 30 дней + приоритет очереди — самый выгодный",
+    stars: 125,
+    usdtPrice: 2.49,
     credits: 0,
     subscriptionDays: 30,
   },

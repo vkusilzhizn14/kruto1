@@ -1,29 +1,29 @@
 /**
  * Filter validity heuristics — predict, BEFORE launching a live search,
- * whether a (biomes, structures, radius) combination has a reasonable
- * chance of physically existing in a Minecraft world.
+ * whether a (biomes, structures, radius) combination is PHYSICALLY
+ * IMPOSSIBLE (not just rare) in a Minecraft world.
  *
- * The goal is to stop users from waiting 5 minutes on a search that
- * cannot possibly succeed (e.g. "mushroom fields next to ice spikes
- * within 200 blocks" — these belong to opposite climate zones and the
- * climate noise gradient in cubiomes simply cannot transition between
- * them at that scale).
+ * Эволюция эвристики (п.10, 2026-05-28):
+ *   До: также ругался на типа «выбрали деревню без plains/desert» — это false-positive,
+ *   потому что деревня спокойно может быть в радиусе в своём биоме (plains),
+ *   а выбранный юзером биом (например forest) — в другой точке радиуса.
+ *   Поиск вполне возможен.
  *
- * The heuristics deliberately err on the side of NOT blocking searches.
- * Returning `severity: 'red'` only happens when at least one anchor
- * relationship is physically violated; otherwise we return 'warn' or
- * 'ok' and let the user decide. Every `red` and `warn` carries a human
- * reason so the bot UI can render an actionable warning.
+ *   После: red бывает ТОЛЬКО когда в самом фильтре биомы из несовместимых
+ *   климатических зон (mushroom_fields + jungle, snowy_plains + desert).
+ *   Это физически невозможно в радиусе 200+ блоков, так как climate
+ *   noise в cubiomes просто не успевает перейти между крайностями.
+ *
+ *   Редкие комбинации (редкие биомы + малый радиус) остаются warn,
+ *   никогда не блокируем. Юзер видит жёлтое предупреждение и решает сам.
  *
  * Implementation notes:
  *   • Climate zones are based on cubiomes' temperature/humidity buckets
  *     (warm/wet/cold/frozen) plus the special "mushroom" and "ocean"
  *     groups that live outside the regular grid.
- *   • Structure anchor zones come from cubiomes' biome constraint
- *     tables (see structureValidBiomes in cubiomes/finders.c). We
- *     replicate just enough of them here to flag the obvious cases.
  *   • `rarityScore` multiplies the per-element rarity prior on top of
- *     a radius factor; tiny scores at small radii get flagged.
+ *     a radius factor; tiny scores at small radii get flagged as "warn"
+ *     (никогда как red).
  */
 
 import { getBiome } from "./biomes.js";
@@ -252,30 +252,12 @@ export function assessFilterValidity(input: ValidityInput): ValidityReport {
     });
   }
 
-  /* 2. Structure anchor compatibility. */
-  if (input.biomes.length > 0) {
-    const biomeSet = new Set(input.biomes);
-    for (const sid of input.structures) {
-      const anchors = structureAnchors(sid);
-      if (!anchors || anchors.length === 0) continue;
-      const overlap = anchors.some((b) => biomeSet.has(b));
-      if (overlap) continue;
-      /* Structure cannot spawn in any of the user's chosen biomes. We
-       * also check whether at least one of its anchor biomes shares a
-       * climate zone with one of the chosen biomes — if not, the user
-       * needs both a different biome AND a different placement to ever
-       * see this combo. */
-      const anchorZones = new Set(anchors.map(biomeZone));
-      const userZones = new Set(input.biomes.map(biomeZone));
-      const zoneOverlap = [...anchorZones].some((z) => userZones.has(z));
-      warnings.push({
-        severity: zoneOverlap ? "warn" : "red",
-        reason: `«${nameOfStructure(sid)}» появляется только в биомах ${anchors
-          .map(nameOfBiome)
-          .join(" / ")}, а в твоём фильтре их нет.`,
-      });
-    }
-  }
+  /* 2. Structure anchor compatibility — ВЫПИЛЕНА (п.10).
+   *
+   * Раньше здесь была проверка типа «юзер выбрал деревню, но в биомах
+   * нет plains/desert» — она давала false-positive: деревня может быть
+   * в радиусе в своём биоме, а выбранный юзером биом — в другой точке радиуса.
+   * Поэтому оставляем только climate-zone-проверку выше. */
 
   /* 3. Rough rarity score. */
   let rarityScore = 1;
@@ -317,14 +299,6 @@ export function assessFilterValidity(input: ValidityInput): ValidityReport {
 function nameOfBiome(id: string): string {
   try {
     return getBiome(id).nameRu;
-  } catch {
-    return id;
-  }
-}
-
-function nameOfStructure(id: string): string {
-  try {
-    return getStructure(id).nameRu;
   } catch {
     return id;
   }

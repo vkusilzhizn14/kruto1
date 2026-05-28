@@ -149,15 +149,49 @@ export async function adminSetCredits(opts: {
 }
 
 /**
+ * Maximum days an admin can grant/revoke in a single command. 36500 days
+ * ≈ 100 years — хватит на всё (включая "вечную" выдачу себе). Ограничение нужно чтобы:
+ *   • Postgres interval не переполнялся (interval field value out of range);
+ *   • JS Date toISOString() не падал с RangeError (Invalid time value);
+ *   • админ не мог случайно выдать себе время в 18 знаков и потом пробовать вернуть назад.
+ *
+ * Причина выбора 100 лет: 36500 дней = выдача Pro на век, но
+ * pro_expires_at останется в нормальном диапазоне timestamptz, без оверфлоув.
+ */
+export const ADMIN_PRO_DAYS_MAX = 36500;
+
+export class AdminProValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AdminProValidationError";
+  }
+}
+
+/**
  * Extend or shrink a user's Pro expiry by `days`.
  *   • positive days extend from MAX(now, current_expiry)
  *   • negative days subtract from current expiry (NULL if it goes past now)
  * Returns the resulting expiry timestamp.
+ *
+ * История бага (28.05.2026): admin выдавал себе 1e19 дней, ловил
+ * Postgres interval overflow / JS Date RangeError, получал uncaught bot
+ * error без внятного ответа в чат, и в процессе случайно нажимал /revoke_pro.
+ * Теперь любой |days| > ADMIN_PRO_DAYS_MAX => явная ошибка без хождения в базу.
  */
 export async function adminAdjustPro(opts: {
   user: UserRow;
   days: number;
 }): Promise<Date | null> {
+  if (!Number.isFinite(opts.days) || !Number.isInteger(opts.days)) {
+    throw new AdminProValidationError(
+      "Срок должен быть целым числом (в днях).",
+    );
+  }
+  if (Math.abs(opts.days) > ADMIN_PRO_DAYS_MAX) {
+    throw new AdminProValidationError(
+      `Максимум за один вызов: ±${ADMIN_PRO_DAYS_MAX} дней (~100 лет). Чтобы не сломать Postgres interval. Если нужно больше — вызови команду несколько раз.`,
+    );
+  }
   if (opts.days === 0) {
     return opts.user.pro_expires_at;
   }
@@ -187,15 +221,64 @@ export async function adminAdjustPro(opts: {
     "SELECT pro_expires_at FROM users WHERE id = $1",
     [opts.user.id],
   );
+  await writeAdminProAudit({
+    userId: opts.user.id,
+    action: opts.days > 0 ? "grant" : "reduce",
+    days: opts.days,
+    newExpiry: rows[0]?.pro_expires_at ?? null,
+  });
   return rows[0]?.pro_expires_at ?? null;
 }
 
-/** Immediately clear a user's Pro subscription. */
+/**
+ * Immediately clear a user's Pro subscription. С audit-записью в ledger.
+ */
 export async function adminRevokePro(userId: number): Promise<void> {
   await pool.query(
     "UPDATE users SET pro_expires_at = NULL, updated_at = NOW() WHERE id = $1",
     [userId],
   );
+  await writeAdminProAudit({
+    userId,
+    action: "revoke",
+    days: 0,
+    newExpiry: null,
+  });
+}
+
+/**
+ * Best-effort audit log of Pro adjustments. Пишем в credits_ledger
+ * с delta=0 и нужным reason — это даёт полную историю изменений
+ * в одном месте (`SELECT reason, metadata FROM credits_ledger WHERE user_id`).
+ *
+ * Ничего не ломаем если вставка провалилась — audit вторичен
+ * к самому факту grant/revoke (они уже применились к users).
+ */
+async function writeAdminProAudit(opts: {
+  userId: number;
+  action: "grant" | "reduce" | "revoke";
+  days: number;
+  newExpiry: Date | null;
+}): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO credits_ledger (user_id, delta, reason, idempotency_key, metadata)
+       VALUES ($1, 0, $2, $3, $4::jsonb)`,
+      [
+        opts.userId,
+        `admin_pro_${opts.action}`,
+        `admin_pro:${randomUUID()}`,
+        JSON.stringify({
+          days: opts.days,
+          new_expiry: opts.newExpiry?.toISOString() ?? null,
+        }),
+      ],
+    );
+  } catch (err) {
+    // Не валим основную операцию из-за аудита. Для наблюдаемости в логи:
+    // eslint-disable-next-line no-console
+    console.error("writeAdminProAudit failed", { err, opts });
+  }
 }
 
 /**

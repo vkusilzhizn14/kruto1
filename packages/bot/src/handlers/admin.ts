@@ -19,6 +19,7 @@ import type { CommandContext, Context } from "grammy";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import {
+  AdminProValidationError,
   adminAdjustCredits,
   adminAdjustPro,
   adminRevokePro,
@@ -45,7 +46,7 @@ function parseDays(token: string): number | null {
   const m = /^([+-]?\d+)\s*(d|day|days|m|mo|month|months|y|yr|year|years)?$/i.exec(token.trim());
   if (!m) return null;
   const n = Number(m[1]);
-  if (!Number.isFinite(n)) return null;
+  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) return null;
   const unit = (m[2] ?? "d").toLowerCase();
   if (unit.startsWith("y")) return n * 365;
   if (unit.startsWith("mo") || unit === "m") return n * 30;
@@ -130,8 +131,8 @@ export async function handleAdminHelp(ctx: CommandContext<Context>): Promise<voi
     "<code>/set_credits &lt;user&gt; &lt;N&gt;</code> — установить точное значение",
     "",
     "<b>Pro подписка</b>",
-    "<code>/grant_pro &lt;user&gt; &lt;N[d|mo|y]&gt;</code> — продлить Pro на N дней/мес/лет",
-    "<code>/revoke_pro &lt;user&gt;</code> — снять Pro немедленно",
+    "<code>/grant_pro &lt;user&gt; &lt;N[d|mo|y]&gt;</code> — продлить Pro на N дней/мес/лет (макс ±36500 дней за вызов)",
+    "<code>/revoke_pro &lt;user&gt; CONFIRM</code> — снять Pro немедленно. Нужно слово <code>CONFIRM</code> чтобы случайно не нажать.",
     "",
     "<b>Прочее</b>",
     "<code>/whois &lt;user&gt;</code> — карточка пользователя",
@@ -319,7 +320,20 @@ export async function handleGrantPro(ctx: CommandContext<Context>): Promise<void
     });
   }
   const adminTgId = ctx.from!.id;
-  const newExpiry = await adminAdjustPro({ user: target, days });
+  let newExpiry: Date | null;
+  try {
+    newExpiry = await adminAdjustPro({ user: target, days });
+  } catch (err) {
+    if (err instanceof AdminProValidationError) {
+      await ctx.reply(`⚠️ ${err.message}`);
+      return;
+    }
+    logger.error({ err, target: target.tg_id, days }, "admin adjust pro failed");
+    await ctx.reply(
+      "❌ Не получилось изменить Pro — внутренняя ошибка. Состояние юзера НЕ изменилось. Посмотри логи.",
+    );
+    return;
+  }
   logger.info(
     { admin: adminTgId, target: target.tg_id, days, expires_at: newExpiry?.toISOString() ?? null },
     "admin adjust pro",
@@ -339,6 +353,23 @@ export async function handleRevokePro(ctx: CommandContext<Context>): Promise<voi
   const target = await resolveTarget(ctx, refArg);
   if ("error" in target) {
     await ctx.reply(target.error, { parse_mode: "HTML" });
+    return;
+  }
+  /* Двух-шаговое подтверждение (история 28.05.2026): admin случайно
+   * нажал /revoke_pro пока пытался выдать себе 1e19 дней, и Pro слетел без
+   * предупреждения. Теперь нужно передать вторым аргументом слово CONFIRM (или подтвердить).
+   * Обязательно в верхнем регистре и латиницей — чтобы исключить случайное введение при наборе русских букв. */
+  const confirmToken = args[ctx.message?.reply_to_message ? 0 : 1];
+  if (confirmToken !== "CONFIRM") {
+    const currentPro = target.pro_expires_at
+      ? `до <b>${formatExpiry(target.pro_expires_at)}</b>`
+      : "<i>не активна</i>";
+    await ctx.reply(
+      `⚠️ Точно хочешь снять Pro у ${userLabel(target)}?\n` +
+        `Сейчас: ${currentPro}\n\n` +
+        `Для подтверждения отправь: <code>/revoke_pro ${target.tg_id} CONFIRM</code>`,
+      { parse_mode: "HTML" },
+    );
     return;
   }
   const adminTgId = ctx.from!.id;

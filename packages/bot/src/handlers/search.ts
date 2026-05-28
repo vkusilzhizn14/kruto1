@@ -53,7 +53,6 @@ import {
   upsertUser,
   type UserRow,
 } from "../services/users.js";
-import { PRO_TRIAL_CALLBACK } from "./trial.js";
 import { clearState, getState, setState, type PickerState } from "../state.js";
 
 function newState(version: McVersion): PickerState {
@@ -379,15 +378,11 @@ async function renderPicker(
 
 /**
  * Build the inline keyboard shown when the daily free quota is empty.
- * Surfaces the one-shot Pro trial button only if the user hasn't used
- * it yet. Otherwise we go straight to the buy / pro purchase options.
+ * Triggers the buy menu — trial паки и подписки видны в /buy.
  */
-function outOfQuotaKeyboard(user: UserRow): InlineKeyboard {
+function outOfQuotaKeyboard(_user: UserRow): InlineKeyboard {
   const kb = new InlineKeyboard();
-  if (user.pro_trial_used_at === null) {
-    kb.text("🎁 Активировать Pro на 24ч бесплатно", PRO_TRIAL_CALLBACK).row();
-  }
-  kb.text("💎 Купить кредиты / Pro", "buy:open").row();
+  kb.text("💎 Купить запросы / Pro", "buy:open").row();
   kb.text("⭐️ К пресетам", "preset:menu");
   return kb;
 }
@@ -395,9 +390,9 @@ function outOfQuotaKeyboard(user: UserRow): InlineKeyboard {
 type StatusSetter = (text: string, extra?: { parse_mode?: "HTML"; reply_markup?: InlineKeyboard }) => Promise<void>;
 
 /**
- * Renders the "out of quota" message offering the one-shot Pro trial
- * (when available) and purchase options. Called from both cache-hit and
- * live-search branches once free quota and balance are both exhausted.
+ * Renders the "out of quota" message with purchase options.
+ * Called from both cache-hit and live-search branches once free quota
+ * and balance are both exhausted.
  */
 async function offerOutOfQuota(
   _ctx: CallbackQueryContext<Context>,
@@ -407,18 +402,11 @@ async function offerOutOfQuota(
   const lines: string[] = [
     "😔 Дневные бесплатные поиски исчерпаны и кредиты закончились.",
     "",
+    "Продолжить можно одним из вариантов:",
+    "• <b>Пробный пак</b> — 10 запросов за 30⭐и",
+    "• <b>Неделя Pro</b> — безлимит на 7 дней за 50⭐и",
+    "• <b>Месяц Pro</b> — безлимит на 30 дней за 125⭐и",
   ];
-  if (user.pro_trial_used_at === null) {
-    lines.push(
-      "🎁 Для тебя доступен <b>бесплатный Pro-триал на 24 часа</b> — безлимитный поиск, один раз на аккаунт.",
-      "",
-      "После триала — пакеты кредитов или Pro подписка.",
-    );
-  } else {
-    lines.push(
-      "Бесплатный Pro-триал уже был использован. Купи пакет кредитов или Pro подписку, чтобы продолжить.",
-    );
-  }
   await setStatus(lines.join("\n"), {
     parse_mode: "HTML",
     reply_markup: outOfQuotaKeyboard(user),
