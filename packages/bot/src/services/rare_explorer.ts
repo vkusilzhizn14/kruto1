@@ -137,6 +137,7 @@ async function explorerTick(): Promise<void> {
     structureIds: combo.structures,
     allowLiveSearch: true,
     timeoutMs: config.explorerTimeoutMs,
+    isBackground: true,
   });
 
   if (result.ok) {

@@ -211,6 +211,10 @@ export async function upsertSeedCacheFull(input: {
   masks: Record<string, bigint>;
   source: string;
 }): Promise<void> {
+  /* For 'enriched' rows, stamp `enriched_at` so the backfill loop and
+   * stats command can tell which seeds were touched recently. Other
+   * sources keep enriched_at NULL — they are not full-bitmask rows. */
+  const enrichedAtAssignment = input.source === "enriched" ? "NOW()" : "NULL";
   await pool.query(
     `INSERT INTO seed_cache (
         seed, mc_version, large_biomes,
@@ -218,13 +222,13 @@ export async function upsertSeedCacheFull(input: {
         biome_mask_200, struct_mask_200,
         biome_mask_500, struct_mask_500,
         biome_mask_1000, struct_mask_1000,
-        source)
+        source, enriched_at)
      VALUES ($1::bigint, $2, $3,
              $4::bigint, $5::bigint,
              $6::bigint, $7::bigint,
              $8::bigint, $9::bigint,
              $10::bigint, $11::bigint,
-             $12)
+             $12, ${enrichedAtAssignment})
      ON CONFLICT (seed, mc_version, large_biomes) DO UPDATE SET
          biome_mask_100   = seed_cache.biome_mask_100   | EXCLUDED.biome_mask_100,
          struct_mask_100  = seed_cache.struct_mask_100  | EXCLUDED.struct_mask_100,
@@ -234,7 +238,8 @@ export async function upsertSeedCacheFull(input: {
          struct_mask_500  = seed_cache.struct_mask_500  | EXCLUDED.struct_mask_500,
          biome_mask_1000  = seed_cache.biome_mask_1000  | EXCLUDED.biome_mask_1000,
          struct_mask_1000 = seed_cache.struct_mask_1000 | EXCLUDED.struct_mask_1000,
-         source = EXCLUDED.source`,
+         source           = EXCLUDED.source,
+         enriched_at      = COALESCE(EXCLUDED.enriched_at, seed_cache.enriched_at)`,
     [
       input.seed.toString(),
       input.mc,
