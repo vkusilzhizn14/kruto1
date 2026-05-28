@@ -105,9 +105,23 @@ export const config = {
   explorerEnabled: optionalBool("EXPLORER_ENABLED", true),
   explorerIntervalSec: optionalNum("EXPLORER_INTERVAL_SEC", 60),
   explorerTimeoutMs: optionalNum("EXPLORER_TIMEOUT_MS", 120_000),
+  /* Fraction of explorer ticks that pick a combo from `query_demand`
+   * top-misses rather than the random rare-combo generator.
+   * Range: 0.0–1.0. Default 0.7 = 70% demand-driven, 30% random.
+   * 0.0 reverts to legacy pure-random behaviour. */
+  explorerDemandRatio: optionalNum("EXPLORER_DEMAND_RATIO", 0.7),
 
   // Enrich live-search results with full bitmask
   enrichLiveResults: optionalBool("ENRICH_LIVE_RESULTS", true),
+
+  /* Backfill enrichment of historic seed_cache rows. Picks one row per
+   * tick whose full bitmask was never computed (enriched_at IS NULL),
+   * runs `seed_enrich`, and stamps the result back. Only fires when
+   * the live-search semaphore is idle, so it never competes with a
+   * real user. */
+  backfillEnabled: optionalBool("BACKFILL_ENABLED", true),
+  backfillIntervalSec: optionalNum("BACKFILL_INTERVAL_SEC", 30),
+  backfillBatchSize: optionalNum("BACKFILL_BATCH_SIZE", 1),
 
   // Ops
   stateDir,
