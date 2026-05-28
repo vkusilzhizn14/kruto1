@@ -10,13 +10,16 @@ import {
   BIOMES,
   type McVersion,
   STRUCTURES,
+  biomeIdsFromMask,
   getRadius,
+  structureIdsFromMask,
 } from "@kruto52/shared";
 
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 
 import { liveSearchSemaphore } from "./concurrency.js";
+import { pool } from "./db.js";
 import { findSeed } from "./search.js";
 
 /* ------- pool definitions ------- */
@@ -48,15 +51,20 @@ function pickN<T>(arr: readonly T[], n: number): T[] {
   return out;
 }
 
+type ComboSource = "random" | "demand";
+
 interface GeneratedCombo {
   biomes: string[];
   structures: string[];
   radius: string;
   mc: McVersion;
+  /** Original-radius blocks for `getRadius()` (matches a supported entry
+   * in the radius catalog: 100/200/500/1000). */
   label: string;
+  source: ComboSource;
 }
 
-function generateCombo(): GeneratedCombo {
+function generateRandomCombo(): GeneratedCombo {
   const radius = pickRandom(RADII);
   const mc: McVersion = "1.21";
 
@@ -93,11 +101,77 @@ function generateCombo(): GeneratedCombo {
     structures = pickN(ALL_STRUCT_IDS, 2);
     biomes = [pickRandom(ALL_BIOME_IDS)];
     const label = [...biomes, ...structures].join("+") + " r=500";
-    return { biomes, structures, radius: "500", mc, label };
+    return { biomes, structures, radius: "500", mc, label, source: "random" };
   }
 
   const label = [...biomes, ...structures].join("+") + ` r=${radius}`;
-  return { biomes, structures, radius, mc, label };
+  return { biomes, structures, radius, mc, label, source: "random" };
+}
+
+const SUPPORTED_RADII = new Set<string>(RADII);
+
+/**
+ * Pull a high-miss combo from `query_demand` and turn it into the same
+ * shape as a random combo. The point of this path is to focus the
+ * explorer on what users actually ask for — every miss recorded by
+ * `recordDemand()` becomes a candidate, and the row with the most
+ * cumulative misses wins.
+ *
+ * We skip combos already in `failedCombos` (no need to keep failing the
+ * same one). When nothing useful is in the table, returns null and the
+ * caller falls back to the random generator.
+ */
+async function generateDemandCombo(): Promise<GeneratedCombo | null> {
+  /* Read a small batch so we can skip ones we've already failed this
+   * process lifetime without doing N round-trips. */
+  const { rows } = await pool.query<{
+    biome_mask: string;
+    structure_mask: string;
+    radius: number;
+    mc_version: McVersion;
+    cache_misses: number;
+  }>(
+    `SELECT biome_mask::text, structure_mask::text, radius, mc_version, cache_misses
+       FROM query_demand
+      WHERE cache_misses > 0
+      ORDER BY cache_misses DESC, last_seen_at DESC
+      LIMIT 16`,
+  );
+  for (const r of rows) {
+    const radiusStr = String(r.radius);
+    if (!SUPPORTED_RADII.has(radiusStr)) continue;
+    const biomes = biomeIdsFromMask(BigInt(r.biome_mask));
+    const structures = structureIdsFromMask(BigInt(r.structure_mask));
+    if (biomes.length === 0 && structures.length === 0) continue;
+    const key = makeComboKey(r.mc_version, biomes, structures, radiusStr);
+    if (failedCombos.has(key)) continue;
+    const label =
+      [...biomes, ...structures].join("+") +
+      ` r=${radiusStr} (demand:${r.cache_misses})`;
+    return {
+      biomes,
+      structures,
+      radius: radiusStr,
+      mc: r.mc_version,
+      label,
+      source: "demand",
+    };
+  }
+  return null;
+}
+
+function makeComboKey(
+  mc: McVersion,
+  biomes: readonly string[],
+  structures: readonly string[],
+  radius: string,
+): string {
+  return [
+    mc,
+    [...biomes].sort().join(","),
+    [...structures].sort().join(","),
+    radius,
+  ].join("|");
 }
 
 /* ------- state ------- */
@@ -106,8 +180,25 @@ const failedCombos = new Set<string>();
 let totalFound = 0;
 let totalCacheHits = 0;
 let totalFailed = 0;
+let totalDemandTicks = 0;
+let totalRandomTicks = 0;
 
 /* ------- tick ------- */
+
+async function pickCombo(): Promise<GeneratedCombo> {
+  /* Demand-driven path attempted first with `EXPLORER_DEMAND_RATIO`
+   * probability; falls back to random if the demand table is empty or
+   * has no fresh combos to try. */
+  if (Math.random() < config.explorerDemandRatio) {
+    try {
+      const demand = await generateDemandCombo();
+      if (demand) return demand;
+    } catch (err) {
+      logger.warn({ err }, "explorer: demand pick failed, falling back");
+    }
+  }
+  return generateRandomCombo();
+}
 
 async function explorerTick(): Promise<void> {
   // Yield to real users: if someone is using (or waiting for) the live
@@ -116,17 +207,15 @@ async function explorerTick(): Promise<void> {
     return;
   }
 
-  const combo = generateCombo();
-  const comboKey = [
-    combo.mc,
-    [...combo.biomes].sort().join(","),
-    [...combo.structures].sort().join(","),
-    combo.radius,
-  ].join("|");
+  const combo = await pickCombo();
+  const comboKey = makeComboKey(combo.mc, combo.biomes, combo.structures, combo.radius);
 
   if (failedCombos.has(comboKey)) {
     return;
   }
+
+  if (combo.source === "demand") totalDemandTicks++;
+  else totalRandomTicks++;
 
   const result = await findSeed({
     userId: 0,
@@ -146,6 +235,7 @@ async function explorerTick(): Promise<void> {
       logger.info(
         {
           combo: combo.label,
+          source: combo.source,
           seed: result.outcome.seed.toString(),
           elapsedMs: result.outcome.elapsedMs,
         },
@@ -159,7 +249,7 @@ async function explorerTick(): Promise<void> {
     totalFailed++;
     if (result.reason !== "not_found") {
       logger.debug(
-        { combo: combo.label, reason: result.reason },
+        { combo: combo.label, source: combo.source, reason: result.reason },
         "explorer: combo failed",
       );
     }
@@ -176,6 +266,7 @@ export function startExplorerLoop(): void {
       rareBiomes: RARE_BIOME_IDS.length,
       rareStructures: RARE_STRUCT_IDS.length,
       intervalSec: config.explorerIntervalSec,
+      demandRatio: config.explorerDemandRatio,
     },
     "rare-combo explorer starting",
   );
@@ -207,11 +298,15 @@ export function explorerStats(): {
   cacheHits: number;
   failed: number;
   failedCombosSize: number;
+  demandTicks: number;
+  randomTicks: number;
 } {
   return {
     found: totalFound,
     cacheHits: totalCacheHits,
     failed: totalFailed,
     failedCombosSize: failedCombos.size,
+    demandTicks: totalDemandTicks,
+    randomTicks: totalRandomTicks,
   };
 }
